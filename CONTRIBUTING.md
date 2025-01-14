@@ -14,94 +14,69 @@ Parca-agent follows [CNCF Code of Conduct](https://github.com/cncf/foundation/bl
 <!-- TODO: Add code of conduct info-->
 # Prerequisites
 
-- Linux Kernel version 4.18+
+- Linux Kernel version 5.3+ with BTF
 - A source of targets to discover from: Kubernetes or systemd.
 
 Install the following dependencies (Instructions are linked for each dependency).
 
 - [Go](https://golang.org/doc/install)
-- [Node](https://nodejs.org/en/download/)
 - [Docker](https://docs.docker.com/engine/install/)
-- [minikube](https://v1-18.docs.kubernetes.io/docs/tasks/tools/install-minikube/)
-- [kubectl](https://v1-18.docs.kubernetes.io/docs/tasks/tools/install-kubectl/)
+- [minikube](https://kubernetes.io/docs/tasks/tools/#minikube)
+- [kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl)
 - [LLVM](https://apt.llvm.org/)
 
-    ```bash
-    $ sudo apt-get update
+> **Note:** LLVM version 11 is enough to compile libbpf.
 
-    $ sudo apt-get install make clang llvm libbpf-dev libelf-dev
-     ```
+For the debian based distributions:
+```console
+$ sudo apt-get update
 
+$ sudo apt-get install make zlib1g libzstd-dev pkg-config libclang-11-dev llvm-11-dev libbpf-dev libelf-dev
+```
+
+Alternatively, [Nix](https://nixos.org/download.html#download-nix) can be used to avoid installing system packages,
+simply run `nix-shell` or `nix develop` to load the dependencies. Docker and VirtualBox are required to be installed as system packages.
 
 # Getting Started
 
 Fork the [parca-agent](https://github.com/parca-dev/parca-agent) and [parca](https://github.com/parca-dev/parca) repositories on GitHub.
 Clone the repositories on to your machine.
 
-```
-$ git clone git@github.com:parca-dev/parca.git
-
+```console
 $ git clone git@github.com:parca-dev/parca-agent.git
 ```
 
-## **Run parca-agent**
-
+## Run parca-agent
 
 Code changes can be tested locally by building parca-agent and running it to profile systemd units.
 The following code snippet profiles the docker daemon, i.e. `docker.service` systemd unit:
 
-```
+```console
 $ cd parca-agent
 
 $ make
 
-$ sudo dist/parca-agent --node=test --systemd-units=docker.service --log-level=debug --kubernetes=false --insecure
+# Assumes Parca server runs on localhost:7070
+$ sudo dist/parca-agent --node=test --log-level=debug --remote-store-address=localhost:7070 --remote-store-insecure
 ```
 
 The generated profiles can be seen at http://localhost:7071 .
 
-**Note**: Currently, parca-agent has systemd discovery support for Cgroup v1 only.
+## Working with parca server
 
-## **Working with parca server**
+Clone the parca server repository and copy the parca-agent repository (where you have made changes) to `parca/tmp/`:
 
-To launch parca-agent locally with the [parca server](https://github.com/parca-dev/parca#development), first copy your parca-agent repository (where you have made changes) to `parca/tmp/`:
+```console
+$ git clone git@github.com:parca-dev/parca.git
 
-```
 $ cp -Rf parca-agent parca/tmp/parca-agent
 ```
 
-Go to the project directory and compile parca:
-
-```
-$ cd parca
-
-$ make build
-```
-
-Run the binary locally.
-
-```
-./bin/parca
-```
-Once compiled the server ui can be seen at http://localhost:7070.
-
-
-To profile all containers using Kubernetes, the parca-agent can be run alongside parca-server and parca-ui using Tilt.
-
-```
-$ cp -Rf parca-agent parca/tmp/parca-agent
-
-$ cd parca
-
-$ make dev/up
-
-$ tilt up
-```
+Then depending on whether you would like to test changes to Parca Agent or Parca, you can run `make dev/up` in Parca Agent or follow [the server's `CONTRIBUTING.md`](https://github.com/parca-dev/parca/blob/main/CONTRIBUTING.md#prerequisites) to get your development Kubernetes cluster running with Tilt.
 
 Test your changes by running:
-```
-$ cd parca && make go/test
 
+```console
 $ cd parca-agent && make test
 ```
 
@@ -113,15 +88,18 @@ TODO:
 
 # Making a PR
 
-Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change. If you are not entirely sure about this, you can discuss this on the [PolarSignals Discord](https://discord.gg/knw3u5X9bs) server as well.
+Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change. If you are not entirely sure about this, you can discuss this on the [Parca Discord](https://discord.gg/ZgUpYgpzXy) server as well. RFCs are used to document all things architecture and design for the Parca project. You can find an index of the RFCs [here](https://docs.google.com/document/d/171XgH4l_gxvGnETVKQBddo75jQz5aTSDOqO0EZ7LLqE/edit?usp=share_link).
 
 Please make sure to update tests as appropriate.
 
 This is roughly what the contribution workflow should look like:
 
-- Create a topic branch from where you want to base your work (usually master).
+- Create a topic branch from where you want to base your work (usually main).
 - Make commits of logical units.
 - Make sure the tests pass, and add any new tests as appropriate.
+- Use `make test` and `make test-e2e` to run unit tests and smoke tests respectively.
+- Make sure the code is properly formatted. (`make format` could be useful here.)
+- Make sure the code is properly linted. (`make lint` could be useful here.)
 - Make sure your commit messages follow the commit guidelines (see below).
 - Push your changes to a topic branch in your fork of the repository.
 - Submit a pull request to the original repository.
@@ -148,3 +126,11 @@ Fixes #38
 ```
 
 The first line is the subject and should be no longer than 70 characters, the second line is always blank, and other lines should be wrapped at 80 characters. This allows the message to be easier to read on GitHub as well as in various git tools.
+
+# pre-commit
+
+[pre-commit](https://pre-commit.com) hooks can installed to help with the linting and formatting of your code:
+
+```
+pre-commit install
+```
