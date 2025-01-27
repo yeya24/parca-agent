@@ -1,71 +1,118 @@
-before:
-  hooks:
-    - go mod tidy
+version: 2
 env:
-  - CGO_CFLAGS=-I{{ .Env.BPF_OUT }}/libbpf/usr/include
-  - CGO_LDFLAGS={{ .Env.BPF_OUT }}/libbpf/libbpf.a
+  - CGO_ENABLED=1
 builds:
-  - main: ./cmd/parca-agent/
-    id: "parca-agent"
+  - id: linux-amd64
+    main: ./
     binary: parca-agent
-    env:
-      - CGO_ENABLED=1
-      - CC=clang
     goos:
       - linux
     goarch:
       - amd64
-    hooks:
-      pre:
-        - make clean
-        - make bpf
+    env:
+      - CC=x86_64-linux-gnu-gcc
+      - CXX=x86_64-linux-gnu-g++
     flags:
+      - -mod=readonly
       - -trimpath
       - -v
     ldflags:
-      - main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser`
-  - main: ./cmd/debug-info/
-    id: "debug-info"
-    binary: parca-debug-info
-    env:
-      - CGO_ENABLED=0
+      # https://goreleaser.com/customization/build/#reproducible-builds
+      # {{.CommitDate}} is the date of the commit to make builds reproducible.
+      - -X main.version={{.Version}} -X main.commit={{.FullCommit}} -X main.date={{.CommitDate}} -X main.goArch=amd64
+      - -extldflags=-static
+    tags:
+      - osusergo
+      - netgo
+      - debugtracer
+  - id: linux-arm64
+    main: ./
+    binary: parca-agent
     goos:
       - linux
     goarch:
-      - amd64
+      - arm64
+    env:
+      - CC=aarch64-linux-gnu-gcc
+      - CXX=aarch64-linux-gnu-g++
     flags:
+      - -mod=readonly
       - -trimpath
       - -v
     ldflags:
-      - main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser`
+      # https://goreleaser.com/customization/build/#reproducible-builds
+      # {{.CommitDate}} is the date of the commit to make builds reproducible.
+      - -X main.version={{.Version}} -X main.commit={{.FullCommit}} -X main.date={{.CommitDate}} -X main.goArch=arm64
+      - -extldflags=-static
+    tags:
+      - osusergo
+      - netgo
 archives:
-  - replacements:
-      linux: Linux
-      amd64: x86_64
+  - name_template: >-
+      {{ .ProjectName }}_
+      {{- trimprefix .Version "v" }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "arm64" }}aarch64
+      {{- else }}{{ .Arch }}{{ end }}
+    format: binary
     format_overrides:
       - goos: windows
         format: zip
+    files:
+      - 'LICENSE*'
+      - 'README*'
 checksum:
   name_template: 'checksums.txt'
 snapshot:
-  name_template: "{{ incpatch .Tag }}-next"
-release:
-  prerelease: auto
-  # Defaults to empty.
-  footer: |
-    ## Docker images
-
-    `docker pull ghcr.io/parca-dev/parca-agent:{{ .Tag }}`
-
-    ## Thanks!
-
-    Join our [Discord server](https://discord.com/invite/ZgUpYgpzXy);
-    Follow us on [Twitter](https://twitter.com/ParcaDev);
-    Read the [documentation](https://www.parca.dev/docs/overview).
+  name_template: "{{ .Branch }}-{{ .ShortCommit }}"
 changelog:
   sort: asc
-  use: github
   filters:
     exclude:
       - '^docs:'
       - '^test:'
+release:
+  github:
+    owner: parca-dev
+    name: parca-agent
+  prerelease: auto
+  draft: false
+  name_template: '{{ .Tag }}'
+dockers:
+- image_templates: ["ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}-amd64"]
+  dockerfile: Dockerfile
+  use: buildx
+  build_flag_templates:
+  - --pull
+  - --platform=linux/amd64
+  - --label=org.opencontainers.image.title={{ .ProjectName }}
+  - --label=org.opencontainers.image.description={{ .ProjectName }}
+  - --label=org.opencontainers.image.url=https://parca.dev/
+  - --label=org.opencontainers.image.source=https://github.com/parca-dev/{{ .ProjectName }}
+  - --label=org.opencontainers.image.version={{ .Tag }}
+  - --label=org.opencontainers.image.revision={{ .FullCommit }}
+  - --label=org.opencontainers.image.licenses=Apache-2.0
+- image_templates: ["ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}-arm64"]
+  goarch: arm64
+  dockerfile: Dockerfile
+  use: buildx
+  build_flag_templates:
+  - --pull
+  - --platform=linux/arm64
+  - --label=org.opencontainers.image.title={{ .ProjectName }}
+  - --label=org.opencontainers.image.description={{ .ProjectName }}
+  - --label=org.opencontainers.image.url=https://parca.dev/
+  - --label=org.opencontainers.image.source=https://github.com/parca-dev/{{ .ProjectName }}
+  - --label=org.opencontainers.image.version={{ .Tag }}
+  - --label=org.opencontainers.image.revision={{ .FullCommit }}
+  - --label=org.opencontainers.image.licenses=Apache-2.0
+docker_manifests:
+- name_template: ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}
+  image_templates:
+  - ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}-amd64
+  - ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}-arm64
+- name_template: ghcr.io/parca-dev/{{ .ProjectName }}:latest
+  image_templates:
+  - ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}-amd64
+  - ghcr.io/parca-dev/{{ .ProjectName }}:{{ .Tag }}-arm64

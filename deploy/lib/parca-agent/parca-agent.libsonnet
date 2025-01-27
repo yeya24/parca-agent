@@ -7,19 +7,66 @@ local defaults = {
   namespace: error 'must provide namespace',
   version: error 'must provide version',
   image: error 'must provide image',
-  stores: ['dnssrv+_grpc._tcp.parca.%s.svc.cluster.local' % defaults.namespace],
+  stores: ['dnssrv+_grpc._tcp.parca'],
 
   resources: {},
   port: 7071,
 
+  config: {
+    relabel_configs: [{
+      source_labels: ['__meta_process_executable_compiler'],
+      target_label: 'compiler',
+    }, {
+      source_labels: ['__meta_system_kernel_machine'],
+      target_label: 'arch',
+    }, {
+      source_labels: ['__meta_system_kernel_release'],
+      target_label: 'kernel_version',
+    }, {
+      source_labels: ['__meta_kubernetes_namespace'],
+      target_label: 'namespace',
+    }, {
+      source_labels: ['__meta_kubernetes_pod_name'],
+      target_label: 'pod',
+    }, {
+      source_labels: ['__meta_kubernetes_pod_container_name'],
+      target_label: 'container',
+    }, {
+      source_labels: ['__meta_kubernetes_pod_container_image'],
+      target_label: 'container_image',
+    }, {
+      source_labels: ['__meta_kubernetes_node_label_topology_kubernetes_io_region'],
+      target_label: 'region',
+    }, {
+      source_labels: ['__meta_kubernetes_node_label_topology_kubernetes_io_zone'],
+      target_label: 'zone',
+    }, {
+      action: 'labelmap',
+      regex: '__meta_kubernetes_pod_label_(.+)',
+      replacement: '${1}',
+    }, {
+      action: 'labeldrop',
+      regex: 'apps_kubernetes_io_pod_index|controller_revision_hash|statefulset_kubernetes_io_pod_name|pod_template_hash',
+
+    }],
+  },
   logLevel: 'info',
-  tempDir: '',
+  socketPath: '',
+
+  profilingDuration: '',
+  profilingCPUSamplingFrequency: '',
 
   token: '',
   insecure: false,
   insecureSkipVerify: false,
 
-  samplingRatio: 0.0,
+  metadataDisableCaching: false,
+
+  debuginfoUploadDisable: false,
+  debuginfoStrip: true,
+
+  hostDbusSystem: true,
+  hostDbusSystemSocket: '/var/run/dbus/system_bus_socket',
 
   commonLabels:: {
     'app.kubernetes.io/name': 'parca-agent',
@@ -28,15 +75,19 @@ local defaults = {
     'app.kubernetes.io/component': 'observability',
   },
 
-  podLabelSelector:: {},
   externalLabels:: {},
 
-  securityContext:: {
+  // Container level security context.
+  securityContext: {
     privileged: true,
-    readOnlyRootFilesystem: true,
+    allowPrivilegeEscalation: true,
+    capabilities: {
+      add: ['SYS_ADMIN'],  // 'BPF', 'PERFMON'
+    },
   },
 
   podMonitor: false,
+  podSecurityPolicy: false,
 };
 
 function(params) {
@@ -94,93 +145,13 @@ function(params) {
     ],
   },
 
-  podSecurityPolicy: {
-    apiVersion: 'policy/v1beta1',
-    kind: 'PodSecurityPolicy',
+  [if std.length((defaults + params).config) > 0 then 'configMap']: {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
     metadata: pa.metadata,
-    spec: {
-      allowPrivilegeEscalation: true,
-      allowedCapabilities: ['*'],
-      fsGroup: {
-        rule: 'RunAsAny',
-      },
-      runAsUser: {
-        rule: 'RunAsAny',
-      },
-      seLinux: {
-        rule: 'RunAsAny',
-      },
-      supplementalGroups: {
-        rule: 'RunAsAny',
-      },
-      privileged: true,
-      hostIPC: true,
-      hostNetwork: true,
-      hostPID: true,
-      hostPorts: [
-        {
-          max: pa.config.port,
-          min: pa.config.port,
-        },
-      ],
-      readOnlyRootFilesystem: true,
-      volumes: [
-        'configMap',
-        'emptyDir',
-        'projected',
-        'secret',
-        'downwardAPI',
-        'persistentVolumeClaim',
-        'hostPath',
-      ],
-      allowedHostPaths+: [
-        {
-          pathPrefix: '/sys',
-        },
-        {
-          pathPrefix: '/lib/modules',
-        },
-      ],
+    data: {
+      'parca-agent.yaml': std.manifestYamlDoc(pa.config.config),
     },
-  },
-
-  role: {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'Role',
-    metadata: pa.metadata,
-    rules: [
-      {
-        apiGroups: [
-          'policy',
-        ],
-        resourceNames: [
-          pa.config.name,
-        ],
-        resources: [
-          'podsecuritypolicies',
-        ],
-        verbs: [
-          'use',
-        ],
-      },
-    ],
-  },
-
-  roleBinding: {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'RoleBinding',
-    metadata: pa.metadata,
-    roleRef: {
-      apiGroup: 'rbac.authorization.k8s.io',
-      kind: 'Role',
-      name: pa.role.metadata.name,
-    },
-    subjects: [
-      {
-        kind: 'ServiceAccount',
-        name: pa.serviceAccount.metadata.name,
-      },
-    ],
   },
 
   daemonSet:
@@ -188,50 +159,68 @@ function(params) {
       name: 'parca-agent',
       image: pa.config.image,
       args: [
-        '/bin/parca-agent',
-        '--log-level=' + pa.config.logLevel,
+        // http-address optionally specifies the TCP address for the server to listen on, in the form "host:port".
+        '--http-address=' + ':' + pa.config.port,
         '--node=$(NODE_NAME)',
-        '--kubernetes',
       ] + (
+        if (std.length(pa.config.config) > 0) then [
+          '--config-path=/etc/parca-agent/parca-agent.yaml',
+        ] else []
+      ) + (
+        if pa.config.logLevel != 'info' then [
+          '--log-level=' + pa.config.logLevel,
+        ] else []
+      ) + (
+        if pa.config.profilingDuration != '' then [
+          '--profiling-duration=%s' % pa.config.profilingDuration,
+        ] else []
+      ) + (
+        if pa.config.profilingCPUSamplingFrequency != '' then [
+          '--profiling-cpu-sampling-frequency=%s' % pa.config.profilingCPUSamplingFrequency,
+        ] else []
+      ) + (
         if pa.config.token != '' then [
-          '--bearer-token=%s' % pa.config.token,
+          '--remote-store-bearer-token=%s' % pa.config.token,
         ] else []
       ) + [
-        '--store-address=%s' % store
+        '--remote-store-address=%s' % store
         for store in pa.config.stores
       ] + (
-        if pa.config.samplingRatio != 0.0 then [
-          '--sampling-ratio=%.1f' % pa.config.samplingRatio,
-        ] else []
-      ) + (
-        if std.length(pa.config.podLabelSelector) > 0 then [
-          '--pod-label-selector=%s=%s' % [labelName, pa.config.podLabelSelector[labelName]]
-          for labelName in std.objectFields(pa.config.podLabelSelector)
-        ] else []
-      ) + (
         if pa.config.insecure then [
-          '--insecure',
+          '--remote-store-insecure',
         ] else []
       ) + (
         if pa.config.insecureSkipVerify then [
-          '--insecure-skip-verify',
+          '--remote-store-insecure-skip-verify',
         ] else []
       ) + (
-        if pa.config.tempDir != '' then [
-          '--temp-dir=' + pa.config.tempDir,
+        if pa.config.debuginfoUploadDisable then [
+          '--debuginfo-upload-disable',
+        ] else []
+      ) + (
+        if !pa.config.debuginfoStrip then [
+          '--debuginfo-strip=false',
+        ] else []
+      ) + (
+        if pa.config.socketPath != '' then [
+          '--container-runtime-socket-path=' + pa.config.socketPath,
         ] else []
       ) + (
         if std.length(pa.config.externalLabels) > 0 then [
-          '--external-label=%s=%s' % [labelName, pa.config.externalLabels[labelName]]
+          '--metadata-external-label=%s=%s' % [labelName, pa.config.externalLabels[labelName]]
           for labelName in std.objectFields(pa.config.externalLabels)
         ] else []
+      ) + (
+        if pa.config.metadataDisableCaching then [
+          '--metadata-disable-caching',
+        ] else []
       ),
+      // Container level security context.
       securityContext: pa.config.securityContext,
       ports: [
         {
           name: 'http',
           containerPort: pa.config.port,
-          hostPort: pa.config.port,
         },
       ],
       volumeMounts: [
@@ -242,6 +231,11 @@ function(params) {
         {
           name: 'run',
           mountPath: '/run',
+        },
+        {
+          name: 'boot',
+          mountPath: '/boot',
+          readOnly: true,
         },
         {
           name: 'modules',
@@ -259,7 +253,17 @@ function(params) {
           name: 'bpffs',
           mountPath: '/sys/fs/bpf',
         },
-      ],
+      ] + (
+        if std.length(pa.config.config) > 0 then [{
+          name: 'config',
+          mountPath: '/etc/parca-agent',
+        }] else []
+      ) + (
+        if pa.config.hostDbusSystem then [{
+          name: 'dbus-system',
+          mountPath: '/var/run/dbus/system_bus_socket',
+        }] else []
+      ),
       env: [
         {
           name: 'NODE_NAME',
@@ -293,17 +297,17 @@ function(params) {
             containers: [c],
             hostPID: true,
             serviceAccountName: pa.serviceAccount.metadata.name,
+            // Pod level security context.
+            securityContext: {
+              seccompProfile: {
+                type: 'RuntimeDefault',
+              },
+            },
             nodeSelector: {
               'kubernetes.io/os': 'linux',
-              'kubernetes.io/arch': 'amd64',
             },
             tolerations: [
               {
-                effect: 'NoSchedule',
-                operator: 'Exists',
-              },
-              {
-                effect: 'NoExecute',
                 operator: 'Exists',
               },
             ],
@@ -312,12 +316,21 @@ function(params) {
                 name: 'tmp',
                 emptyDir: {},
               },
+              // Needed for reading the container runtime metadata.
               {
                 name: 'run',
                 hostPath: {
                   path: '/run',
                 },
               },
+              // Needed for reading kernel configuration.
+              {
+                name: 'boot',
+                hostPath: {
+                  path: '/boot',
+                },
+              },
+              // Deprecated by v0.10.0 release. Remove in a couple of releases.
               {
                 name: 'cgroup',
                 hostPath: {
@@ -330,19 +343,33 @@ function(params) {
                   path: '/lib/modules',
                 },
               },
+              // Needed for reading the pinned eBPF maps and programs.
               {
                 name: 'bpffs',
                 hostPath: {
                   path: '/sys/fs/bpf',
                 },
               },
+              // Needed for writing logs from eBPF programs.
               {
                 name: 'debugfs',
                 hostPath: {
                   path: '/sys/kernel/debug',
                 },
               },
-            ],
+            ] + (
+              if std.length(pa.config.config) > 0 then [{
+                name: 'config',
+                configMap: { name: pa.configMap.metadata.name },
+              }] else []
+            ) + (
+              if pa.config.hostDbusSystem then [{
+                name: 'dbus-system',
+                hostPath: {
+                  path: pa.config.hostDbusSystemSocket,
+                },
+              }] else []
+            ),
           },
         },
       },
@@ -364,5 +391,97 @@ function(params) {
         matchLabels: pa.daemonSet.spec.template.metadata.labels,
       },
     },
+  },
+
+  [if std.objectHas(params, 'podSecurityPolicy') && params.podSecurityPolicy then 'podSecurityPolicy']: {
+    apiVersion: 'policy/v1',
+    kind: 'PodSecurityPolicy',
+    metadata: pa.metadata,
+    spec: {
+      allowPrivilegeEscalation: true,
+      allowedCapabilities: ['*'],
+      fsGroup: {
+        rule: 'RunAsAny',
+      },
+      runAsUser: {
+        rule: 'RunAsAny',
+      },
+      seLinux: {
+        rule: 'RunAsAny',
+      },
+      supplementalGroups: {
+        rule: 'RunAsAny',
+      },
+      privileged: true,
+      hostIPC: true,
+      hostNetwork: true,
+      hostPID: true,
+      readOnlyRootFilesystem: true,
+      volumes: [
+        'configMap',
+        'emptyDir',
+        'projected',
+        'secret',
+        'downwardAPI',
+        'persistentVolumeClaim',
+        'hostPath',
+      ],
+      allowedHostPaths+: [
+        {
+          pathPrefix: '/sys',
+        },
+        {
+          pathPrefix: '/boot',
+        },
+        {
+          pathPrefix: '/var/run/dbus',
+        },
+        {
+          pathPrefix: '/run',
+        },
+        {
+          pathPrefix: '/lib/modules',
+        },
+      ],
+    },
+  },
+
+  [if std.objectHas(params, 'podSecurityPolicy') && params.podSecurityPolicy then 'role']: {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'Role',
+    metadata: pa.metadata,
+    rules: [
+      {
+        apiGroups: [
+          'policy',
+        ],
+        resourceNames: [
+          pa.config.name,
+        ],
+        resources: [
+          'podsecuritypolicies',
+        ],
+        verbs: [
+          'use',
+        ],
+      },
+    ],
+  },
+
+  [if std.objectHas(params, 'podSecurityPolicy') && params.podSecurityPolicy then 'roleBinding']: {
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'RoleBinding',
+    metadata: pa.metadata,
+    roleRef: {
+      apiGroup: 'rbac.authorization.k8s.io',
+      kind: 'Role',
+      name: pa.role.metadata.name,
+    },
+    subjects: [
+      {
+        kind: 'ServiceAccount',
+        name: pa.serviceAccount.metadata.name,
+      },
+    ],
   },
 }
